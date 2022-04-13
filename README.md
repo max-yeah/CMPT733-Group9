@@ -77,7 +77,7 @@ Finally, visit the malicious website hosted on Linux VM. For example, if the ip 
 
 <br />
 
-If the exploitation is successful, you can see a reverse shell established on Linux VM. If the malicious page is crashed, simply refresh the page and try again.
+If the exploitation is successful, you can see a reverse shell established on Linux VM. If the malicious page is crashed, simply refresh the page and try again since we might not get multiple references all the time and also due to some heap randomisation.
 
 <br />
 <br />
