@@ -85,3 +85,12 @@ If the exploitation is successful, you can see a reverse shell established on Li
 ## Video Demo
 
 You can also check our demo [here](https://youtu.be/Wq8kT_a6ZLQ) on YouTube.
+
+## References
+- https://seal9055.com/index.html
+
+- https://blog.exodusintel.com/2019/03/20/cve-2019-5786-analysis-and-exploitation/
+
+- https://github.com/rapid7/metasploit-framework/blob/master/modules/exploits/windows/browser/chrome_ﬁlereader_uaf.rb
+
+- https://github.com/exodusintel/CVE-2019-5786
